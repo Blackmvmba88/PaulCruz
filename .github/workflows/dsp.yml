@@ -1,0 +1,19 @@
+name: DSP standalone verification
+on:
+  push:
+  pull_request:
+jobs:
+  dsp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compile and test DSP without Android SDK
+        shell: bash
+        run: |
+          mkdir -p build/dsp-smoke
+          javac -d build/dsp-smoke app/src/main/java/com/blackmamba/paulcruz/dsp/SafeSpeechProcessor.java tests/standalone/DspSmoke.java
+          java -cp build/dsp-smoke DspSmoke

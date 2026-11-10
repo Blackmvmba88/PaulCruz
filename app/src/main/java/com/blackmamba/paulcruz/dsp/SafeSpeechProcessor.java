@@ -25,7 +25,7 @@ public final class SafeSpeechProcessor {
    low=lowCoef*low+(1f-lowCoef)*sample;
    float hp=sample-low;
    high=highCoef*high+(1f-highCoef)*hp;
-   float band=hp-high;
+   float band=high; // low-pass of high-passed signal: actual 250–3500 Hz speech band
    envelope=Math.max(Math.abs(band),envelope*0.995f);
    float gate=envelope<FLOOR?0.12f:1f;
    float desired=band*gate*appliedGain;
