@@ -11,7 +11,7 @@ import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.os.Process;
 import com.blackmamba.paulcruz.dsp.SafeSpeechProcessor;
-/** Foreground-only monitoring; refuses to start without wired/USB headset output. */
+/** Experimental foreground audio loop; never intentionally routes audio to device speakers. */
 public final class AudioLoop {
  private static final int RATE=48000, FRAME=480;
  private final Context context;
@@ -22,17 +22,19 @@ public final class AudioLoop {
  public AudioLoop(Context context){this.context=context.getApplicationContext();}
  public String getStatus(){return status;}
  public void setGain(float gain){dsp.setGain(gain);}
- private AudioDeviceInfo headset() {
+ private AudioDeviceInfo headset(){
   AudioManager m=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
   if(m==null)return null;
-  for(AudioDeviceInfo device:m.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-   int type=device.getType();
-   if(type==AudioDeviceInfo.TYPE_WIRED_HEADPHONES||type==AudioDeviceInfo.TYPE_WIRED_HEADSET||type==AudioDeviceInfo.TYPE_USB_HEADSET) return device;
+  for(AudioDeviceInfo d:m.getDevices(AudioManager.GET_DEVICES_OUTPUTS)){
+   int t=d.getType();
+   if(t==AudioDeviceInfo.TYPE_WIRED_HEADPHONES||t==AudioDeviceInfo.TYPE_WIRED_HEADSET||t==AudioDeviceInfo.TYPE_USB_HEADSET)return d;
   }
   return null;
  }
  public synchronized boolean start(){
   if(running)return true;
+  // Do not restart until previous worker has released the audio route.
+  if(worker!=null){status="Esperando cierre de audio";return false;}
   if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){status="Permiso de micrófono requerido";return false;}
   if(headset()==null){status="Conecta audífonos cableados o USB";return false;}
   dsp.reset();running=true;status="Iniciando...";
@@ -42,7 +44,7 @@ public final class AudioLoop {
  private void run(){
   AudioRecord input=null;
   AudioTrack output=null;
-  try {
+  try{
    Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
    int inMin=AudioRecord.getMinBufferSize(RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);
    int outMin=AudioTrack.getMinBufferSize(RATE,AudioFormat.CHANNEL_OUT_MONO,AudioFormat.ENCODING_PCM_16BIT);
@@ -55,17 +57,26 @@ public final class AudioLoop {
    AudioDeviceInfo device=headset();
    if(device==null||!output.setPreferredDevice(device))throw new IllegalStateException("Headset routing unavailable");
    if(input.getState()!=AudioRecord.STATE_INITIALIZED||output.getState()!=AudioTrack.STATE_INITIALIZED)throw new IllegalStateException("Audio init");
-   input.startRecording();output.play();status="Escuchando";
-   short[] frame=new short[FRAME];
+   output.setVolume(0f); // mute until real output routing verified
+   input.startRecording();output.play();
+   AudioDeviceInfo routed=output.getRoutedDevice();
+   if(!running||routed==null||routed.getId()!=device.getId())throw new IllegalStateException("Output not routed to headset");
+   output.setVolume(1f);
+   status="Escuchando";short[] frame=new short[FRAME];
    while(running){
-    AudioDeviceInfo available=headset();
-    AudioDeviceInfo routed=output.getRoutedDevice();
-    if(available==null||routed==null||routed.getId()!=device.getId()){status="Ruta de salida no segura; detenido";break;}
+    routed=output.getRoutedDevice();
+    if(headset()==null||routed==null||routed.getId()!=device.getId()){
+     output.setVolume(0f);status="Ruta de salida no segura; detenido";break;
+    }
     int n=input.read(frame,0,FRAME,AudioRecord.READ_BLOCKING);
     if(n<=0)throw new IllegalStateException("Input error: "+n);
     dsp.process(frame,n);
     int offset=0;
     while(running&&offset<n){
+     routed=output.getRoutedDevice();
+     if(headset()==null||routed==null||routed.getId()!=device.getId()){
+      output.setVolume(0f);status="Ruta de salida no segura; detenido";running=false;break;
+     }
      int written=output.write(frame,offset,n-offset,AudioTrack.WRITE_BLOCKING);
      if(written<=0)throw new IllegalStateException("Output error: "+written);
      offset+=written;
@@ -74,8 +85,9 @@ public final class AudioLoop {
   }catch(Exception e){status="Error: "+e.getClass().getSimpleName();}
   finally{
    running=false;
+   if(output!=null){try{output.setVolume(0f);output.pause();output.flush();output.stop();}catch(Exception ignored){}output.release();}
    if(input!=null){try{input.stop();}catch(Exception ignored){}input.release();}
-   if(output!=null){try{output.pause();output.flush();output.stop();}catch(Exception ignored){}output.release();}
+   synchronized(this){worker=null;}
   }
  }
 }
